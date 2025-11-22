@@ -46,7 +46,8 @@
 
 ## 🔥 News
 
-[2025-11-22] 🤗 Our finetuned weights are available. [Check it here!](https://huggingface.co/collections/Wakals/covt-chain-of-visual-thought)
+[2025-11-22] ⭐️ The evaluation and Gradio demo are available NOW!
+[2025-11-21] 🤗 Our finetuned weights are available. [Check it here!](https://huggingface.co/collections/Wakals/covt-chain-of-visual-thought)
 
 ## 📑 Table of Contents
 
@@ -60,7 +61,7 @@
 
 ![Teaser Image](assets/teaser.png)
 
-> Rather than restricting VLM reasoning to discrete language space with limited representational capacity, **CoVT** forms a visual thought chain that enables VLMs to reason in continuous visual space. By introducing *continuous visual tokens* that encode perceptual cues (e.g., segmentation, depth, instance, and edge structure), CoVT composes *chains of textual and visual thoughts* that link semantic reasoning with perceptual grounding. These visual “thought chains” bridge language and vision, enabling fine-grained understanding, spatial precision, and geometric awareness beyond the reach of text-based reasoning.
+> Rather than restricting VLM reasoning to a discrete language space with limited representational capacity, **CoVT** forms a visual thought chain that enables VLMs to reason in continuous visual space. By introducing *continuous visual tokens* that encode perceptual cues (e.g., segmentation, depth, instance, and edge structure), CoVT composes *chains of textual and visual thoughts* that link semantic reasoning with perceptual grounding. These visual “thought chains” bridge language and vision, enabling fine-grained understanding, spatial precision, and geometric awareness beyond the reach of text-based reasoning.
 
 
 <details>
