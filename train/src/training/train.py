@@ -357,7 +357,7 @@ def train():
         args=training_args,
         **data_module
     )
-    model.print_trainable_parameters()
+    # model.print_trainable_parameters()
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)
