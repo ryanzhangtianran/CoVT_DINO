@@ -1,11 +1,14 @@
+import argparse
 import os
 import torch
-from torch.utils.data import DataLoader
-from transformers import PaliGemmaProcessor, AutoImageProcessor
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from accelerate import Accelerator
+
 from tqdm import tqdm
 from PIL import Image
+from accelerate import Accelerator
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from torch.utils.data import DataLoader
+from transformers import PaliGemmaProcessor, AutoImageProcessor
+
 
 from covt_dino_model import COVT_DINO
 
@@ -22,12 +25,24 @@ CONFIG = {
     "dino_model_path": "/home/zhongzd/trzhang/models/models--facebook--dinov2-giant/snapshots/611a9d42f2335e0f921f1e313ad3c1b7178d206d",
     "num_vis_tokens": 4,
     # Data
-    "dataset_id": "lerobot/droid_100",
+    "dataset_path": "/home/zhongzd/trzhang/dataset/datasets--lerobot--droid_100/snapshots/87301a2d2e99340e2010c9ef0f1d8e780b08aaf9",
     "image_key": "observation.images.image",
     # Logging
     "project_name": "covt-training",
     "save_dir": "./output_covt_paligemma"
 }
+
+def setup_processors_and_tokens():
+    paligemma_processor = PaliGemmaProcessor.from_pretrained(CONFIG["paligemma_model_path"], use_fast=True)
+    dino_processor = AutoImageProcessor.from_pretrained(CONFIG["dino_model_path"], use_fast=True)
+
+    special_tokens = [f"<vis_{i}>" for i in range(CONFIG["num_vis_tokens"])]
+    num_added = paligemma_processor.tokenizer.add_tokens(special_tokens)
+    special_tokens_str = "".join(special_tokens)
+    special_token_ids = paligemma_processor.tokenizer.convert_tokens_to_ids(special_tokens)
+    target_ids_tensor = torch.tensor(special_token_ids, dtype=torch.long)
+
+    return paligemma_processor, dino_processor, special_tokens_str, target_ids_tensor, num_added
 
 def collate_fn_droid(batch, paligemma_proc, dino_proc, special_tokens_str, target_ids_tensor):
     pil_images = []
@@ -43,13 +58,15 @@ def collate_fn_droid(batch, paligemma_proc, dino_proc, special_tokens_str, targe
 
     paligemma_inputs = paligemma_proc(images=pil_images, text=texts, return_tensors="pt", padding=True)
     dino_inputs = dino_proc(images=pil_images, return_tensors="pt")
+    batch_size = len(batch)
+    target_ids = target_ids_tensor.expand(batch_size, -1).clone()
 
     return {
         "input_ids": paligemma_inputs["input_ids"],
         "attention_mask": paligemma_inputs["attention_mask"],
         "pixel_values_paligemma": paligemma_inputs.pixel_values.to(torch.bfloat16),
         "pixel_values_dino": dino_inputs.pixel_values.to(torch.bfloat16),
-        "target_token_ids": target_ids_tensor
+        "target_token_ids": target_ids
     }
 
 def main():
@@ -67,15 +84,13 @@ def main():
             config=CONFIG
         )
 
-    paligemma_processor = PaliGemmaProcessor.from_pretrained(CONFIG["paligemma_model_path"])
-    dino_processor = AutoImageProcessor.from_pretrained(CONFIG["dino_model_path"])
-
-    special_tokens = [f"<vis_{i}>" for i in range(CONFIG["num_vis_tokens"])]
-    num_added = paligemma_processor.tokenizer.add_tokens(special_tokens)
-    special_tokens_str = "".join(special_tokens)
-    
-    special_token_ids = paligemma_processor.tokenizer.convert_tokens_to_ids(special_tokens)
-    target_ids_tensor = torch.tensor(special_token_ids, dtype=torch.long)
+    (
+        paligemma_processor,
+        dino_processor,
+        special_tokens_str,
+        target_ids_tensor,
+        num_added,
+    ) = setup_processors_and_tokens()
     
     if accelerator.is_main_process:
         print(f"Added {num_added} special tokens: {special_tokens_str}")
@@ -83,16 +98,17 @@ def main():
     
     with accelerator.main_process_first():
         model = COVT_DINO(
-            paligemma_model_path=CONFIG["paligemma_model_path"],
-            dino_model_path=CONFIG["dino_model_path"],
+            PALIGEMMA_MODEL_PATH=CONFIG["paligemma_model_path"],
+            DINO_MODEL_PATH=CONFIG["dino_model_path"],
+            DTYPE=torch.bfloat16,
             num_vis_tokens=CONFIG["num_vis_tokens"]
         )
         model.resize_token_embeddings(len(paligemma_processor.tokenizer))
 
     if accelerator.is_main_process:
-        print(f"Loading LeRobot Dataset: {CONFIG['dataset_id']}...")
-        
-    dataset = LeRobotDataset(CONFIG["dataset_id"], split="train")
+        print(f"Loading LeRobot Dataset: {CONFIG['dataset_path']}...")
+
+    dataset = LeRobotDataset(CONFIG["dataset_path"])
     
     dataloader = DataLoader(
         dataset,
@@ -131,8 +147,10 @@ def main():
         with accelerator.accumulate(model):
             loss = model(**batch)
             accelerator.backward(loss)
-            optimizer.step()
-            optimizer.zero_grad()
+
+            if accelerator.sync_gradients:
+                optimizer.step()
+                optimizer.zero_grad()
             
         if accelerator.sync_gradients:
             progress_bar.update(1)
@@ -170,6 +188,94 @@ def main():
         accelerator.end_training()
         print("Training Finished.")
 
+def smoke_test_four_gpu(max_batches=2, test_batch_size=4):
+    accelerator = Accelerator(
+        gradient_accumulation_steps=1,
+        mixed_precision="bf16",
+        log_with=None
+    )
+
+    if accelerator.is_main_process:
+        print(f"--- Smoke test on {accelerator.num_processes} processes ---")
+        if accelerator.num_processes != 4:
+            print("警告：当前进程数不是4，请确认使用四卡运行。")
+
+    (
+        paligemma_processor,
+        dino_processor,
+        special_tokens_str,
+        target_ids_tensor,
+        num_added,
+    ) = setup_processors_and_tokens()
+
+    if accelerator.is_main_process:
+        print(f"已添加 {num_added} 个可视化特征token: {special_tokens_str}")
+        print(f"目标token ID: {target_ids_tensor}")
+
+    with accelerator.main_process_first():
+        model = COVT_DINO(
+            PALIGEMMA_MODEL_PATH=CONFIG["paligemma_model_path"],
+            DINO_MODEL_PATH=CONFIG["dino_model_path"],
+            DTYPE=torch.bfloat16,
+            num_vis_tokens=CONFIG["num_vis_tokens"]
+        )
+        model.resize_token_embeddings(len(paligemma_processor.tokenizer))
+
+    dataset = LeRobotDataset(CONFIG["dataset_path"])
+    per_device_bs = max(1, min(test_batch_size, CONFIG["batch_size"]))
+    dataloader = DataLoader(
+        dataset,
+        batch_size=per_device_bs,
+        shuffle=False,
+        num_workers=CONFIG["num_workers"],
+        collate_fn=lambda b: collate_fn_droid(
+            b,
+            paligemma_processor,
+            dino_processor,
+            special_tokens_str,
+            target_ids_tensor
+        )
+    )
+
+    model, dataloader = accelerator.prepare(model, dataloader)
+    model.eval()
+
+    with torch.no_grad():
+        for step, batch in enumerate(dataloader):
+            loss = model(**batch)
+            accelerator.print(f"[step {step}] loss={loss.item():.4f}")
+            if step + 1 >= max_batches:
+                break
+
+    accelerator.wait_for_everyone()
+    accelerator.print("四卡数据加载与前向计算烟雾测试完成。")
+
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="COVT DINO Train/Test Entry")
+    parser.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="运行四卡数据加载与模型前向烟雾测试。"
+    )
+    parser.add_argument(
+        "--max-test-batches",
+        type=int,
+        default=2,
+        help="烟雾测试中执行的批次数。"
+    )
+    parser.add_argument(
+        "--test-batch-size",
+        type=int,
+        default=4,
+        help="烟雾测试时每个设备的batch size。"
+    )
+    args = parser.parse_args()
+
+    if args.smoke_test:
+        smoke_test_four_gpu(
+            max_batches=args.max_test_batches,
+            test_batch_size=args.test_batch_size
+        )
+    else:
+        main()
     

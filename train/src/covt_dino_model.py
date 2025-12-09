@@ -12,7 +12,7 @@ class COVT_DINO(nn.Module):
         self.paligemma = PaliGemmaForConditionalGeneration.from_pretrained(
             PALIGEMMA_MODEL_PATH,
             torch_dtype=DTYPE,
-            _attn_implementation="flash_attention_2"
+            _attn_implementation="eager"
         )
         # Initialize DINO model
         print(f"Loading DINO from: {DINO_MODEL_PATH}...")
@@ -21,7 +21,7 @@ class COVT_DINO(nn.Module):
             torch_dtype=DTYPE
         )
 
-        # Freeze Siglip and DINO parameters
+        # Freeze PaliGemma and DINO parameters
         self.paligemma.requires_grad_(False)
         self.dino.requires_grad_(False)
 
@@ -36,7 +36,7 @@ class COVT_DINO(nn.Module):
         # Projection layer
         self.input_projection = nn.Linear(self.paligemma_dim, self.paligemma_dim, dtype=DTYPE)
         # Learnable queries
-        self.learnable_queries = nn.Parameter(torch.randn(1, self.num_patches, self.siglip_dim, dtype=DTYPE))
+        self.learnable_queries = nn.Parameter(torch.randn(1, self.num_patches, self.paligemma_dim, dtype=DTYPE))
         # Cross-attention
         self.cross_attention = nn.MultiheadAttention(
             embed_dim=self.paligemma_dim, 
@@ -48,7 +48,7 @@ class COVT_DINO(nn.Module):
         self.output_projection = nn.Linear(self.paligemma_dim, self.dino_dim, dtype=DTYPE)
 
     def resize_token_embeddings(self, visual_tokens_size):
-        self.siglip.resize_token_embeddings(visual_tokens_size)
+        self.paligemma.resize_token_embeddings(visual_tokens_size)
 
     def grab_dino_features(self, pixel_values):
         with torch.no_grad():
@@ -71,7 +71,7 @@ class COVT_DINO(nn.Module):
         last_hidden_state = outputs.last_hidden_state[-1]
 
         if target_token_ids is not None:
-            visual_tokens_mask = torch.isin(input_ids, target_token_ids)
+            visual_tokens_mask = torch.isin(input_ids, target_token_ids.view(-1))
             extracted_tokens = last_hidden_state[visual_tokens_mask].view(input_ids.shape[0], self.num_vis_tokens, -1)
             visual_tokens = extracted_tokens
         
